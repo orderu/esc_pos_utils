@@ -8,12 +8,14 @@
 
 import 'dart:convert';
 import 'dart:typed_data' show Uint8List;
+
+import 'package:esc_pos_utils/esc_pos_utils.dart';
+import 'package:gbk_codec/gbk_codec.dart';
 import 'package:hex/hex.dart';
 import 'package:image/image.dart';
-import 'package:gbk_codec/gbk_codec.dart';
-import 'package:esc_pos_utils/esc_pos_utils.dart';
-import 'enums.dart';
+
 import 'commands.dart';
+import 'enums.dart';
 
 class Generator {
   Generator(this._paperSize, this._profile, {this.spaceBetweenRows = 5});
@@ -22,9 +24,11 @@ class Generator {
   final PaperSize _paperSize;
   CapabilityProfile _profile;
   int? _maxCharsPerLine;
+
   // Global styles
   String? _codeTable;
   PosFontType? _font;
+
   // Current styles
   PosStyles _styles = PosStyles();
   int spaceBetweenRows;
@@ -217,6 +221,7 @@ class Generator {
     return ((0xFFFFFFFF ^ (0x1 << shift)) & uint32) |
         ((newValue ? 1 : 0) << shift);
   }
+
   // ************************ (end) Internal helpers  ************************
 
   //**************************** Public command generators ************************
@@ -469,38 +474,39 @@ class Generator {
     List<PosColumn> nextRow = <PosColumn>[];
 
     for (int i = 0; i < cols.length; ++i) {
-      int colInd =
+      final col = cols[i];
+      assert(col.textEncoded == null);
+
+      final int colInd =
           cols.sublist(0, i).fold(0, (int sum, col) => sum + col.width);
-      double charWidth = _getCharWidth(cols[i].styles);
-      double fromPos = _colIndToPosition(colInd);
+      final double charWidth = _getCharWidth(col.styles);
+      final double fromPos = _colIndToPosition(colInd);
       final double toPos =
-          _colIndToPosition(colInd + cols[i].width) - spaceBetweenRows;
-      int maxCharactersNb = ((toPos - fromPos) / charWidth).floor();
+          _colIndToPosition(colInd + col.width) - spaceBetweenRows;
+      final int maxCharacters = ((toPos - fromPos) / charWidth).floor();
 
-      if (!cols[i].containsChinese) {
-        // CASE 1: containsChinese = false
-        Uint8List encodedToPrint = cols[i].textEncoded != null
-            ? cols[i].textEncoded!
-            : _encode(cols[i].text);
+      String outputString = col.text;
+      final int indexOfFirstNewLine = outputString.indexOf('\n');
 
-        // If the col's content is too long, split it to the next row
-        int realCharactersNb = encodedToPrint.length;
-        if (realCharactersNb > maxCharactersNb) {
-          // Print max possible and split to the next row
-          Uint8List encodedToPrintNextRow =
-              encodedToPrint.sublist(maxCharactersNb);
-          encodedToPrint = encodedToPrint.sublist(0, maxCharactersNb);
-          isNextRow = true;
-          nextRow.add(PosColumn(
-              textEncoded: encodedToPrintNextRow,
-              width: cols[i].width,
-              styles: cols[i].styles));
-        } else {
-          // Insert an empty col
-          nextRow.add(PosColumn(
-              text: '', width: cols[i].width, styles: cols[i].styles));
+      if (indexOfFirstNewLine != -1) {
+        outputString = outputString.substring(0, indexOfFirstNewLine);
+      }
+      if (outputString.length > maxCharacters) {
+        // truncate by max chars
+        outputString = outputString.substring(0, maxCharacters);
+
+        // truncate by last space to avoid splitting in the middle of a word
+        // don't include the space when wrapping
+        final int indexOfLastSpace = outputString.lastIndexOf(' ');
+        print("indexOfLastSpace: " + indexOfLastSpace.toString());
+        if (indexOfLastSpace != -1) {
+          outputString = outputString.substring(0, indexOfLastSpace);
+          print("New output" + outputString);
         }
-        // end rows splitting
+      }
+
+      if (!col.containsChinese) {
+        final Uint8List encodedToPrint = _encode(outputString);
         bytes += _text(
           encodedToPrint,
           styles: cols[i].styles,
@@ -508,36 +514,7 @@ class Generator {
           colWidth: cols[i].width,
         );
       } else {
-        // CASE 1: containsChinese = true
-        // Split text into multiple lines if it too long
-        int counter = 0;
-        int splitPos = 0;
-        for (int p = 0; p < cols[i].text.length; ++p) {
-          final int w = _isChinese(cols[i].text[p]) ? 2 : 1;
-          if (counter + w >= maxCharactersNb) {
-            break;
-          }
-          counter += w;
-          splitPos += 1;
-        }
-        String toPrintNextRow = cols[i].text.substring(splitPos);
-        String toPrint = cols[i].text.substring(0, splitPos);
-
-        if (toPrintNextRow.isNotEmpty) {
-          isNextRow = true;
-          nextRow.add(PosColumn(
-              text: toPrintNextRow,
-              containsChinese: true,
-              width: cols[i].width,
-              styles: cols[i].styles));
-        } else {
-          // Insert an empty col
-          nextRow.add(PosColumn(
-              text: '', width: cols[i].width, styles: cols[i].styles));
-        }
-
-        // Print current row
-        final list = _getLexemes(toPrint);
+        final list = _getLexemes(outputString);
         final List<String> lexemes = list[0];
         final List<bool> isLexemeChinese = list[1];
 
@@ -553,6 +530,41 @@ class Generator {
           // Define the absolute position only once (we print one line only)
           // colInd = null;
         }
+      }
+
+      String? nextLine;
+      if (outputString.length < col.text.length) {
+        final skipFirstCharOfNextLine = col.text[outputString.length] == ' ' ||
+            col.text[outputString.length] == '\n';
+
+        final isNextLineEmpty = skipFirstCharOfNextLine &&
+            outputString.length + 1 == col.text.length;
+
+        if (!isNextLineEmpty) {
+          // split remaining text in next row
+          nextLine = col.text.substring(
+            skipFirstCharOfNextLine
+                ? outputString.length + 1
+                : outputString.length,
+          );
+        }
+      }
+
+      if (nextLine != null) {
+        isNextRow = true;
+        nextRow.add(
+          PosColumn(
+            text: nextLine,
+            width: col.width,
+            styles: col.styles,
+            containsChinese: col.containsChinese,
+          ),
+        );
+      } else {
+        // Insert an empty col
+        nextRow.add(
+          PosColumn(text: '', width: cols[i].width, styles: cols[i].styles),
+        );
       }
     }
 
@@ -755,6 +767,7 @@ class Generator {
     bytes += emptyLines(linesAfter + 1);
     return bytes;
   }
+
   // ************************ (end) Public command generators ************************
 
   // ************************ (end) Internal command generators ************************
