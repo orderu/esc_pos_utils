@@ -9,13 +9,14 @@
 import 'dart:convert';
 import 'dart:typed_data' show Uint8List;
 
+import 'package:characters/characters.dart';
 import 'package:esc_pos_utils/esc_pos_utils.dart';
 import 'package:gbk_codec/gbk_codec.dart';
 import 'package:hex/hex.dart';
 import 'package:image/image.dart';
 
 import 'commands.dart';
-import 'enums.dart';
+import 'glyph.dart';
 
 class Generator {
   Generator(this._paperSize, this._profile, {this.spaceBetweenRows = 5});
@@ -33,7 +34,6 @@ class Generator {
   PosStyles _styles = PosStyles();
   int spaceBetweenRows;
 
-  // ************************ Internal helpers ************************
   int _getMaxCharsPerLine(PosFontType? font) {
     if (_paperSize == PaperSize.mm58) {
       return (font == null || font == PosFontType.fontA) ? 32 : 42;
@@ -77,21 +77,47 @@ class Generator {
         .replaceAll("»", '"')
         .replaceAll(" ", ' ')
         .replaceAll("•", '.');
-    if (!isKanji) {
-      return latin1.encode(text);
-    } else {
-      return Uint8List.fromList(gbk_bytes.encode(text));
+
+    final List<int> bytes = [];
+
+    for (var glyph in text.characters) {
+      if (glyph.codeUnits.length == 1 && glyph.codeUnitAt(0) < 128) {
+        // ASCII. First 128 characters is the same for all code pages
+        bytes.add(glyph.codeUnitAt(0));
+      } else if (_hasChineseCharacters(glyph)) {
+        // TODO: switch code sheet?
+        bytes.addAll(gbk_bytes.encode(glyph));
+      } else {
+        final glyphBytes = getGlyphBytes(glyph);
+        if (glyphBytes == null || !_profile.hasCodePage(glyphBytes.codePage)) {
+          bytes.add("?".codeUnitAt(0));
+        } else {
+          // Change code page if needed
+          if (_styles.codeTable != glyphBytes.codePage) {
+            bytes.addAll(_changeCodePageByNumber(
+                _profile.getCodePageId(glyphBytes.codePage)));
+            _styles = _styles.copyWith(codeTable: glyphBytes.codePage);
+          }
+          bytes.addAll(glyphBytes.bytes);
+        }
+      }
     }
+
+    return Uint8List.fromList(bytes);
   }
 
   List _getLexemes(String text) {
+    if (text.isEmpty) {
+      return <dynamic>[<String>[], <bool>[]];
+    }
+
     final List<String> lexemes = [];
     final List<bool> isLexemeChinese = [];
     int start = 0;
     int end = 0;
-    bool curLexemeChinese = _isChinese(text[0]);
+    bool curLexemeChinese = _hasChineseCharacters(text[0]);
     for (var i = 1; i < text.length; ++i) {
-      if (curLexemeChinese == _isChinese(text[i])) {
+      if (curLexemeChinese == _hasChineseCharacters(text[i])) {
         end += 1;
       } else {
         lexemes.add(text.substring(start, end + 1));
@@ -107,9 +133,53 @@ class Generator {
     return <dynamic>[lexemes, isLexemeChinese];
   }
 
-  /// Break text into chinese/non-chinese lexemes
-  bool _isChinese(String ch) {
-    return ch.codeUnitAt(0) > 255;
+  bool _hasChineseCharacters(String ch) {
+    RegExp chineseRegExp = RegExp(r'[\u4e00-\u9fa5]');
+    return chineseRegExp.hasMatch(ch);
+
+    /*
+    U+3040 – U+30FF: Katakana and Hiragana (Japanese only)
+    U+3400 – U+4DBF: Extension of CJK A Unified Ideographs (Chinese, Japanese, and Korean)
+    U+4E00 – U+9FFF: CJK Unified Ideographs (Chinese, Japanese, and Korean)
+    U+F900 – U+FAFF: CJK Compatibility Ideographs (Chinese, Japanese, and Korean)
+    U+FF66 – U+FF9F: Half-width Katakana (Japanese only)
+
+    CJK Unified Ideographs                  4E00-9FFF   Common
+    CJK Unified Ideographs Extension A      3400-4DBF   Rare
+    CJK Unified Ideographs Extension B      20000-2A6DF Rare, historic
+    CJK Unified Ideographs Extension C      2A700–2B73F Rare, historic
+    CJK Unified Ideographs Extension D      2B740–2B81F Uncommon, some in current use
+    CJK Unified Ideographs Extension E      2B820–2CEAF Rare, historic
+    CJK Compatibility Ideographs            F900-FAFF   Duplicates, unifiable variants, corporate characters
+    CJK Compatibility Ideographs Supplement 2F800-2FA1F Unifiable variants
+======================================================================================================
+    CJK Unified Ideographs                  4E00-9FFF   Common
+    U+4E00 – U+9FFF: CJK Unified Ideographs (Chinese, Japanese, and Korean)
+
+    CJK Unified Ideographs Extension A      3400-4DBF   Rare
+    U+3400 – U+4DBF: Extension of CJK A Unified Ideographs (Chinese, Japanese, and Korean)
+
+    CJK Compatibility Ideographs            F900-FAFF   Duplicates, unifiable variants, corporate characters
+    U+F900 – U+FAFF: CJK Compatibility Ideographs (Chinese, Japanese, and Korean)
+
+    CJK Unified Ideographs Extension B      20000-2A6DF Rare, historic
+    CJK Unified Ideographs Extension C      2A700–2B73F Rare, historic
+    CJK Unified Ideographs Extension D      2B740–2B81F Uncommon, some in current use
+    CJK Unified Ideographs Extension E      2B820–2CEAF Rare, historic
+    CJK Compatibility Ideographs Supplement 2F800-2FA1F Unifiable variants
+
+    U+3040 – U+30FF: Katakana and Hiragana (Japanese only)
+    U+FF66 – U+FF9F: Half-width Katakana (Japanese only)
+     */
+    //
+    // return (codePoint >= 0x4E00 && codePoint <= 0x9FFF) || // Common Chinese characters
+    //     (codePoint >= 0x3400 && codePoint <= 0x4DBF) || // Rare Chinese characters
+    //     (codePoint >= 0x20000 && codePoint <= 0x2A6DF) || // CJK Extension B characters
+    //     (codePoint >= 0x2A700 && codePoint <= 0x2B73F) || // CJK Extension C characters
+    //     (codePoint >= 0x2B740 && codePoint <= 0x2B81F) || // CJK Extension D characters
+    //     (codePoint >= 0x2B820 && codePoint <= 0x2CEAF) || // CJK Extension E characters
+    //     (codePoint >= 0xF900 && codePoint <= 0xFAFF) || // Compatibility Ideographs
+    //     (codePoint >= 0x2F800 && codePoint <= 0x2FA1F); // Compatibility Ideographs Supplement
   }
 
   /// Generate multiple bytes for a number: In lower and higher parts, or more parts as needed.
@@ -235,15 +305,20 @@ class Generator {
     return bytes;
   }
 
+  List<int> _changeCodePageByNumber(int codePageNumber) {
+    final List<int> bytes = _profile.isZywell
+        ? [31, 27, 31, 255, codePageNumber] // US ESC US 255 <codePageNumber>
+        : [...cCodeTable.codeUnits, codePageNumber]; // ESC t <codePageNumber>
+    return Uint8List.fromList(bytes);
+  }
+
   /// Set global code table which will be used instead of the default printer's code table
   /// (even after resetting)
   List<int> setGlobalCodeTable(String? codeTable) {
     List<int> bytes = [];
     _codeTable = codeTable;
     if (codeTable != null) {
-      bytes += Uint8List.fromList(
-        List.from(cCodeTable.codeUnits)..add(_profile.getCodePageId(codeTable)),
-      );
+      bytes += _changeCodePageByNumber(_profile.getCodePageId(codeTable));
       _styles = _styles.copyWith(codeTable: codeTable);
     }
     return bytes;
@@ -319,17 +394,12 @@ class Generator {
 
     // Set local code table
     if (styles.codeTable != null) {
-      bytes += Uint8List.fromList(
-        List.from(cCodeTable.codeUnits)
-          ..add(_profile.getCodePageId(styles.codeTable)),
-      );
+      bytes +=
+          _changeCodePageByNumber(_profile.getCodePageId(styles.codeTable));
       _styles =
           _styles.copyWith(align: styles.align, codeTable: styles.codeTable);
     } else if (_codeTable != null) {
-      bytes += Uint8List.fromList(
-        List.from(cCodeTable.codeUnits)
-          ..add(_profile.getCodePageId(_codeTable)),
-      );
+      bytes += _changeCodePageByNumber(_profile.getCodePageId(_codeTable));
       _styles = _styles.copyWith(align: styles.align, codeTable: _codeTable);
     }
 
@@ -354,18 +424,20 @@ class Generator {
     int? maxCharsPerLine,
   }) {
     List<int> bytes = [];
-    if (!containsChinese) {
+
+    if (_hasChineseCharacters(text)) {
+      bytes += _mixedKanji(text, styles: styles, linesAfter: linesAfter);
+    } else {
       bytes += _text(
         _encode(text, isKanji: containsChinese),
         styles: styles,
-        isKanji: containsChinese,
+        isKanji: false,
         maxCharsPerLine: maxCharsPerLine,
       );
       // Ensure at least one line break after the text
       bytes += emptyLines(linesAfter + 1);
-    } else {
-      bytes += _mixedKanji(text, styles: styles, linesAfter: linesAfter);
     }
+
     return bytes;
   }
 
@@ -416,9 +488,7 @@ class Generator {
     bytes += cKanjiOff.codeUnits;
 
     if (codeTable != null) {
-      bytes += Uint8List.fromList(
-        List.from(cCodeTable.codeUnits)..add(_profile.getCodePageId(codeTable)),
-      );
+      bytes += _changeCodePageByNumber(_profile.getCodePageId(codeTable));
     }
 
     bytes += Uint8List.fromList(List<int>.generate(256, (i) => i));
@@ -498,10 +568,8 @@ class Generator {
         // truncate by last space to avoid splitting in the middle of a word
         // don't include the space when wrapping
         final int indexOfLastSpace = outputString.lastIndexOf(' ');
-        print("indexOfLastSpace: " + indexOfLastSpace.toString());
         if (indexOfLastSpace != -1) {
           outputString = outputString.substring(0, indexOfLastSpace);
-          print("New output" + outputString);
         }
       }
 
@@ -747,12 +815,18 @@ class Generator {
 
   /// Print horizontal full width separator
   /// If [len] is null, then it will be defined according to the paper width
-  List<int> hr({String ch = '-', int? len, int linesAfter = 0}) {
-    List<int> bytes = [];
+  List<int> hr({String? ch, int? len, int linesAfter = 0}) {
+    if (ch == null) {
+      final glyphBytes = getGlyphBytes('─');
+      if (glyphBytes == null || !_profile.hasCodePage(glyphBytes.codePage)) {
+        ch = '-'; // Use a normal ASCII dash
+      } else {
+        ch = '─';
+      }
+    }
     int n = len ?? _maxCharsPerLine ?? _getMaxCharsPerLine(_styles.fontType);
     String ch1 = ch.length == 1 ? ch : ch[0];
-    bytes += text(List.filled(n, ch1).join(), linesAfter: linesAfter);
-    return bytes;
+    return text(List.filled(n, ch1).join(), linesAfter: linesAfter);
   }
 
   List<int> textEncoded(
@@ -849,5 +923,4 @@ class Generator {
     bytes += emptyLines(linesAfter + 1);
     return bytes;
   }
-  // ************************ (end) Internal command generators ************************
 }
