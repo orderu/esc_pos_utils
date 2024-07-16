@@ -228,8 +228,8 @@ class Generator {
 
     while (left < widthPx) {
       final Image slice = copyCrop(biggerImage, x: left, y: 0, width: lineHeight, height: heightPx);
-      final Uint8List bytes = slice.getBytes(order: ChannelOrder.grayAlpha);
-      blobs.add(bytes);
+      grayscale(slice);
+      blobs.add(slice.convert(numChannels: 1).toUint8List());
       left += lineHeight;
     }
 
