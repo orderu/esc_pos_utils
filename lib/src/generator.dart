@@ -227,8 +227,8 @@ class Generator {
     final List<List<int>> blobs = [];
 
     while (left < widthPx) {
-      final Image slice = copyCrop(biggerImage, x: left, y: 0, width: lineHeight, height: heightPx);
-      grayscale(slice);
+      Image slice = copyCrop(biggerImage, x: left, y: 0, width: lineHeight, height: heightPx);
+      slice = grayscale(slice);
       blobs.add(slice.convert(numChannels: 1).toUint8List());
       left += lineHeight;
     }
