@@ -7,8 +7,11 @@
  */
 
 enum PosAlign { left, center, right }
+
 enum PosCutMode { full, partial }
+
 enum PosFontType { fontA, fontB }
+
 enum PosDrawer { pin2, pin5 }
 
 /// Choose image printing function
@@ -18,6 +21,7 @@ enum PosImageFn { bitImageRaster, graphics }
 
 class PosTextSize {
   const PosTextSize._internal(this.value);
+
   final int value;
   static const size1 = PosTextSize._internal(1);
   static const size2 = PosTextSize._internal(2);
@@ -34,6 +38,7 @@ class PosTextSize {
 
 class PaperSize {
   const PaperSize._internal(this.value);
+
   final int value;
   static const mm58 = PaperSize._internal(1);
   static const mm80 = PaperSize._internal(2);
@@ -43,6 +48,7 @@ class PaperSize {
 
 class PosBeepDuration {
   const PosBeepDuration._internal(this.value);
+
   final int value;
   static const beep50ms = PosBeepDuration._internal(1);
   static const beep100ms = PosBeepDuration._internal(2);
@@ -53,4 +59,23 @@ class PosBeepDuration {
   static const beep350ms = PosBeepDuration._internal(7);
   static const beep400ms = PosBeepDuration._internal(8);
   static const beep450ms = PosBeepDuration._internal(9);
+}
+
+enum BitMapImageMode {
+  mode8DotSingleDensity(value: 0, verticalDots: 8, isSingleDensity: true),
+  mode8DotDoubleDensity(value: 1, verticalDots: 8, isSingleDensity: false),
+  mode24DotSingleDensity(value: 32, verticalDots: 24, isSingleDensity: true),
+  mode24DotDoubleDensity(value: 33, verticalDots: 24, isSingleDensity: false);
+
+  final int value;
+  final int verticalDots;
+  final bool isSingleDensity;
+
+  bool get isDoubleDensity => !isSingleDensity;
+
+  const BitMapImageMode({
+    required this.value,
+    required this.verticalDots,
+    required this.isSingleDensity,
+  });
 }

@@ -227,11 +227,14 @@ class Generator {
     final List<List<int>> blobs = [];
 
     while (left < widthPx) {
-      Image slice = copyCrop(biggerImage, x: left, y: 0, width: lineHeight, height: heightPx);
+      Image slice = copyCrop(biggerImage,
+          x: left, y: 0, width: lineHeight, height: heightPx);
       slice = grayscale(slice);
       blobs.add(slice.convert(numChannels: 1).toUint8List());
       left += lineHeight;
     }
+
+    imgSrc = grayscale(imgSrc);
 
     return blobs;
   }
@@ -689,6 +692,84 @@ class Generator {
     }
     // Reset line spacing: ESC 2 (HEX: 0x1b 0x32)
     bytes += [27, 50];
+    return bytes;
+  }
+
+  /// @link https://download4.epson.biz/sec_pubs/pos/reference_en/escpos/esc_asterisk.html
+  List<int> image2(
+    Image imgSrc, {
+    PosAlign align = PosAlign.center,
+    BitMapImageMode mode = BitMapImageMode.mode24DotDoubleDensity,
+  }) {
+    Image image = Image.from(imgSrc);
+
+    // Put image in front of a white-background in order to get colours
+    // with alpha channel
+    Image newImage =
+        Image(width: image.width, height: image.height, numChannels: 4); // TODO
+    newImage = fill(newImage, color: ColorUint8.rgba(255, 255, 255, 255));
+    newImage = compositeImage(newImage, image);
+
+    // TODO: resize for max width
+
+    // newImage = copyResize(newImage, width: newWidth, height: newHeight, maintainAspect: false);
+
+    final newWidth =
+        mode.isSingleDensity ? newImage.width ~/ 2 : newImage.width;
+    final newHeight = newImage.height ~/ (24 ~/ mode.verticalDots);
+    if (newImage.width != newWidth || newImage.height != newHeight) {
+      newImage = copyResize(
+        newImage,
+        width: newWidth,
+        height: newHeight,
+        maintainAspect: false,
+      );
+    }
+
+    final int width = newImage.width;
+    final int height = newImage.height;
+    final int nH = newImage.width ~/ 256;
+    final int nL = newImage.width % 256;
+
+    List<int> bytes = [];
+
+    bytes += setStyles(PosStyles().copyWith(align: align)); // Image alignment
+
+    // Adjust line spacing: ESC 3 0
+    bytes += [27, 51, 0];
+
+    final numberOfRows = (height / mode.verticalDots).ceil();
+    final numberOfVerticalBytes = mode.verticalDots ~/ 8; // 1 or 3
+    for (int row = 0; row < numberOfRows; row++) {
+      // Add the ESC * command for the current block of rows
+      bytes.addAll([0x1B, 0x2A, mode.value, nL, nH]);
+
+      for (int x = 0; x < width; x++) {
+        for (int yByteIndex = 0;
+            yByteIndex < numberOfVerticalBytes;
+            yByteIndex++) {
+          int byte = 0;
+          for (int bit = 0; bit < 8; bit++) {
+            final int y = (row * mode.verticalDots) + (yByteIndex * 8) + bit;
+            if (x < newImage.width && y < newImage.height) {
+              final pixel = newImage.getPixel(x, y);
+              final num luminance = getLuminance(pixel);
+              if (luminance < 128) {
+                // Threshold for black/white
+                byte |= (1 << (7 - bit)); // enable bit at position
+              }
+            }
+          }
+          bytes.add(byte);
+        }
+      }
+
+      bytes.add(0x0A); // Newline after each row or block
+    }
+
+    // Reset line spacing: ESC 2
+    bytes += [27, 50];
+
     return bytes;
   }
 
